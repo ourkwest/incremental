@@ -8,22 +8,19 @@
 (def seconds 1000)
 (def minutes (* 60 seconds))
 
-
 (defn try-slurp [f default]
   (try (slurp f)
        (catch Exception _ default)))
 
-; TODO make them actual Files?
-(def instruction-file (str (System/getProperty "user.home") File/separator "/.incremental/instructions"))
-(def ingestion-file (str (System/getProperty "user.home") File/separator "/.incremental/ingestion"))
-(def state-file ".incremental-state.edn")
+(def instruction-file (io/as-file (str (System/getProperty "user.home") File/separator "/.incremental/instructions")))
+(def ingestion-file (io/as-file (str (System/getProperty "user.home") File/separator "/.incremental/ingestion")))
+(def state-file (io/as-file ".incremental-state.edn"))
 (def state (-> state-file
                (try-slurp "#{}")
                edn/read-string
                atom
                (add-watch :store (fn [_ _ _ new-state]
                                    (spit state-file (with-out-str (pprint/pprint new-state)))))))
-
 
 (defn -main [& _]
 
@@ -34,9 +31,8 @@
       (println "Looping...")
 
       ;; ingest instructions
-
-      (when (.exists (io/as-file instruction-file))
-        (println "Rename:" (.renameTo (io/as-file instruction-file) (io/as-file ingestion-file)))
+      (when (.exists instruction-file)
+        (println "Rename:" (.renameTo instruction-file ingestion-file))
         (doseq [[_ code data] (re-seq #"(?m)^([-+!]{1}) (.+)$" (try-slurp ingestion-file ""))]
           (case code
             "+" (swap! state conj data)
@@ -44,7 +40,6 @@
             "!" (reset! running false)
             (println "Invalid instruction:" code)))
         (println "Delete:" (io/delete-file ingestion-file :failed)))
-
 
       ;; check directories
 
