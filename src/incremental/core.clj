@@ -1,7 +1,8 @@
 (ns incremental.core
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.pprint :as pprint])
+            [clojure.pprint :as pprint]
+            [clojure.java.shell :as shell])
   (:import (java.io File)))
 
 
@@ -14,13 +15,27 @@
 
 (def instruction-file (io/as-file (str (System/getProperty "user.home") File/separator "/.incremental/instructions")))
 (def ingestion-file (io/as-file (str (System/getProperty "user.home") File/separator "/.incremental/ingestion")))
-(def state-file (io/as-file ".incremental-state.edn"))
-(def state (-> state-file
-               (try-slurp "#{}")
-               edn/read-string
-               atom
-               (add-watch :store (fn [_ _ _ new-state]
-                                   (spit state-file (with-out-str (pprint/pprint new-state)))))))
+(def dirs-file (io/as-file ".incremental-dirs.edn"))
+(def dirs (-> dirs-file
+              (try-slurp "#{}")
+              edn/read-string
+              atom
+              (add-watch :store
+                         (fn [_ _ _ new-state]
+                           (spit dirs-file (with-out-str (pprint/pprint new-state)))))))
+(def state (atom {}))
+
+(defn git-clean? [dir]
+  (empty? (:out (shell/sh "git" "status" "-s" :dir dir))))
+
+(defn git-last-commit [dir]
+  (* (Long/parseLong (:out (shell/sh "git" "log" "-n" "1" "--format=format:%at" :dir dir))) seconds))
+
+(defn last-change [dir]
+  (fn [timestamp]
+    (if timestamp
+      (max timestamp (git-last-commit dir))
+      (System/currentTimeMillis))))
 
 (defn -main [& _]
 
@@ -33,15 +48,23 @@
       ;; ingest instructions
       (when (.exists instruction-file)
         (println "Rename:" (.renameTo instruction-file ingestion-file))
-        (doseq [[_ code data] (re-seq #"(?m)^([-+!]{1}) (.+)$" (try-slurp ingestion-file ""))]
-          (case code
-            "+" (swap! state conj data)
-            "-" (swap! state disj data)
+        (doseq [[_ op-code data] (re-seq #"(?m)^([-+!]{1}) (.+)$" (try-slurp ingestion-file ""))]
+          (case op-code
+            "+" (swap! dirs conj data)
+            "-" (swap! dirs disj data)
             "!" (reset! running false)
-            (println "Invalid instruction:" code)))
+            (println "Invalid instruction:" op-code)))
         (println "Delete:" (io/delete-file ingestion-file :failed)))
 
       ;; check directories
+      (doseq [dir @dirs]
+        (if (git-clean? dir)
+          (swap! state dissoc dir)
+          (swap! state update dir (last-change dir))))
+
+      (let [now (System/currentTimeMillis)]
+        (doseq [[dir timestamp] @state]
+          (println (- now timestamp) "\t" dir)))
 
       ;; Thread/sleep
       (Thread/sleep (* 10 seconds))
