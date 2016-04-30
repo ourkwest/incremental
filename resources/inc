@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+mkdir -p ~/.incremental
+
+start() {
+  cd $(dirname $0)/..
+  echo $(pwd)
+  echo "incremental will be running shortly..."
+  lein run &
+}
+
+case "$1" in
+  add)    echo "+ $(pwd)" >> ~/.incremental/instructions;;
+  remove) echo "- $(pwd)" >> ~/.incremental/instructions;;
+  stop)   echo "! Cease." >> ~/.incremental/instructions;;
+  start)  start;;
+  "")     start;;
+  *)      echo "Usage: inc [add|remove|start|stop] (defaults to start if no arg passed)"; exit 1;;
+esac
+
