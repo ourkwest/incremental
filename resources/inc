@@ -9,10 +9,14 @@ start() {
   lein run &
 }
 
+instruct() {
+  echo $@ >> ~/.incremental/instructions
+}
+
 case "$1" in
-  add)    echo "+ $(pwd)" >> ~/.incremental/instructions;;
-  remove) echo "- $(pwd)" >> ~/.incremental/instructions;;
-  stop)   echo "! Cease." >> ~/.incremental/instructions;;
+  add)    instruct "+ $(pwd)";;
+  remove) instruct "- $(pwd)";;
+  stop)   instruct "! Cease.";;
   start)  start;;
   "")     start;;
   *)      echo "Usage: inc [add|remove|start|stop] (defaults to start if no arg passed)"; exit 1;;
