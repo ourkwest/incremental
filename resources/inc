@@ -4,9 +4,8 @@ mkdir -p ~/.incremental
 
 start() {
   cd $(dirname $0)/..
-  echo $(pwd)
-  echo "incremental will be running shortly..."
-  lein run &
+  echo "Incremental will be running shortly."
+  lein run > ~/.incremental/log 2>&1 &
 }
 
 instruct() {
