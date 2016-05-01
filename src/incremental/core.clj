@@ -2,8 +2,10 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.pprint :as pprint]
-            [clojure.java.shell :as shell])
-  (:import (java.io File)))
+            [clojure.java.shell :as shell]
+            [dorothy.core :as dotty])
+  (:import (java.io File)
+           (java.awt Color)))
 
 
 (def seconds 1000)
@@ -37,10 +39,12 @@
       (max timestamp (git-last-commit dir))
       (System/currentTimeMillis))))
 
+;; TODO: redo with watchers? might catch the moment that the directory was clean!
 (defn -main [& _]
 
   (println "Started.")
-  (let [running (atom true)]
+  (let [running (atom true)
+        dot (dotty/make-dot "Incremental")]
     (while @running
 
       (println "Looping...")
@@ -51,7 +55,8 @@
         (doseq [[_ op-code data] (re-seq #"(?m)^([-+!]{1}) (.+)$" (try-slurp ingestion-file ""))]
           (case op-code
             "+" (swap! dirs conj data)
-            "-" (swap! dirs disj data)
+            "-" (do (swap! dirs disj data)
+                    (swap! state dissoc data))
             "!" (reset! running false)
             (println "Invalid instruction:" op-code)))
         (println "Delete:" (io/delete-file ingestion-file :failed)))
@@ -64,12 +69,25 @@
 
       (let [now (System/currentTimeMillis)]
         (doseq [[dir timestamp] @state]
-          (println (- now timestamp) "\t" dir)))
+          (println (- now timestamp) "\t" dir))
+
+        (println "Oldest:" (apply max (cons 0 (map (comp #(- now %) second) @state))))
+
+        (let [oldest (apply max (cons 0 (map (comp #(- now %) second) @state)))
+              limit (* 15 minutes)
+              proportion (- 1.0 (/ (min limit oldest) limit))
+              hue (* 0.4 proportion)
+              color (Color/getHSBColor (float hue) (float 1.0) (float 1.0))]
+
+          (println proportion)
+          (println hue)
+          (dotty/paint dot color)))
 
       ;; Thread/sleep
       (Thread/sleep (* 10 seconds))
 
-      ))
+      )
+    (dotty/destroy dot))
 
   (println "Stopped."))
 
