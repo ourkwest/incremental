@@ -41,9 +41,7 @@
                     (System/currentTimeMillis)
                     (max timestamp (git-last-commit dir)))])))
 
-;; TODO: redo with watchers? might catch the moment that the directory was clean! Could certainly make it more responsive.
 ;; TODO: configuration - add dot menu for this? or Command line instructions?
-;; TODO: use core.async? would it be cleaner or not?
 (defn -main [& _]
 
   (println "Started.")
