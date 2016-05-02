@@ -17,15 +17,17 @@
 (def incremental-dir (io/file (System/getProperty "user.home") ".incremental"))
 (def instruction-file (io/file incremental-dir "instructions"))
 (def ingestion-file (io/file incremental-dir "ingestion"))
-(def dirs-file (io/file ".incremental-dirs.edn"))
-(def dirs (-> dirs-file
-              (try-slurp "#{}")
-              edn/read-string
-              atom
-              (add-watch :store
-                         (fn [_ _ _ new-state]
-                           (spit dirs-file (with-out-str (pprint/pprint new-state)))))))
-(def state (atom {}))
+(def dirs-file (io/file incremental-dir "dirs.edn"))
+
+(defn load-state [edn-file now]
+  (let [map->set #(into #{} (keys %))
+        set->map #(into {} (for [k %] [k now]))]
+    (-> edn-file
+        (try-slurp "#{}")
+        edn/read-string
+        set->map
+        atom
+        (add-watch :write #(spit edn-file (with-out-str (pprint/pprint (map->set %4))))))))
 
 (defn git-clean? [dir]
   (empty? (:out (shell/sh "git" "status" "-s" :dir dir))))
@@ -33,11 +35,11 @@
 (defn git-last-commit [dir]
   (* (Long/parseLong (:out (shell/sh "git" "log" "-n" "1" "--format=format:%at" :dir dir))) seconds))
 
-(defn last-change [dir]
-  (fn [timestamp]
-    (if timestamp
-      (max timestamp (git-last-commit dir))
-      (System/currentTimeMillis))))
+(defn check-directories [state]
+  (into {} (for [[dir timestamp] state]
+             [dir (if (git-clean? dir)
+                    (System/currentTimeMillis)
+                    (max timestamp (git-last-commit dir)))])))
 
 ;; TODO: redo with watchers? might catch the moment that the directory was clean! Could certainly make it more responsive.
 ;; TODO: configuration - add dot menu for this? or Command line instructions?
@@ -46,37 +48,37 @@
 
   (println "Started.")
 
-  (let [running (atom true)
+  (let [state (load-state dirs-file (System/currentTimeMillis))
+        running (atom true)
         dot (dotty/make-dot "Incremental")]
+
     (while @running
-      (println "Looping...")
 
-      ;; ingest instructions
-      (when (.exists instruction-file)
-        (.renameTo instruction-file ingestion-file)
-        (doseq [[_ op-code data] (re-seq #"(?m)^([-+!]{1}) (.+)$" (try-slurp ingestion-file ""))]
-          (println ">" op-code data)
-          (case op-code
-            "+" (swap! dirs conj data)
-            "-" (do (swap! dirs disj data)
-                    (swap! state dissoc data))
-            "!" (reset! running false)
-            (println "Invalid instruction:" op-code)))
-        (io/delete-file ingestion-file :failed))
+      (let [now (System/currentTimeMillis)]
 
-      ;; check directories
-      (doseq [dir @dirs]
-        (if (git-clean? dir)
-          (swap! state dissoc dir)
-          (swap! state update dir (last-change dir))))
+        (println "Looping...")
 
-      (let [now (System/currentTimeMillis)
-            oldest (apply max (cons 0 (map (comp #(- now %) second) @state)))
-            limit (* 15 minutes)
-            proportion (- 1.0 (/ (min limit oldest) limit))
-            hue (* 0.4 proportion)
-            color (Color/getHSBColor (float hue) (float 1.0) (float 1.0))]
-        (dotty/paint dot color))
+        ;; ingest instructions
+        (when (.exists instruction-file)
+          (.renameTo instruction-file ingestion-file)
+          (doseq [[_ op-code data] (re-seq #"(?m)^([-+!]{1}) (.+)$" (try-slurp ingestion-file ""))]
+            (println ">" op-code data)
+            (case op-code
+              "+" (swap! state assoc data (System/currentTimeMillis))
+              "-" (swap! state dissoc data)
+              "!" (reset! running false)
+              (println "Invalid instruction:" op-code)))
+          (io/delete-file ingestion-file :failed))
+
+        ;; check directories
+        (swap! state check-directories)
+
+        (let [oldest (apply max (cons 0 (map (comp #(- now %) second) @state)))
+              limit (* 15 minutes)
+              proportion (- 1.0 (/ (min limit oldest) limit))
+              hue (* 0.4 proportion)
+              color (Color/getHSBColor (float hue) (float 1.0) (float 1.0))]
+          (dotty/paint dot color)))
 
       ;; Thread/sleep
       (Thread/sleep (* 10 seconds)))
