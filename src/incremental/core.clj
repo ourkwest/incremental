@@ -32,6 +32,14 @@
 (defn git-clean? [dir]
   (empty? (:out (shell/sh "git" "status" "-s" :dir dir))))
 
+(defn git-obliterate! [dir]
+  (shell/sh "git" "reset" "--hard" :dir dir)
+  (shell/sh "git" "clean" "-fd" :dir dir))
+
+(defn git-stash! [dir]
+  (shell/sh "git" "add" "." :dir dir)
+  (shell/sh "git" "stash" :dir dir))
+
 (defn git-last-commit [dir]
   (* (Long/parseLong (:out (shell/sh "git" "log" "-n" "1" "--format=format:%at" :dir dir))) seconds))
 
