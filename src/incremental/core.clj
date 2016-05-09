@@ -10,21 +10,36 @@
 (def seconds 1000)
 (def minutes (* 60 seconds))
 
-(defn try-slurp [f default]
+(defn try-slurp [f]
   (try (slurp f)
-       (catch Exception _ default)))
+       (catch Exception _ nil)))
 
 (def incremental-dir (io/file (System/getProperty "user.home") ".incremental"))
 (def instruction-file (io/file incremental-dir "instructions"))
 (def ingestion-file (io/file incremental-dir "ingestion"))
 (def dirs-file (io/file incremental-dir "dirs.edn"))
+(def config-file (io/file incremental-dir "config.edn"))
+
+(defn load-config [config-file default]
+  (or (or (try-slurp config-file)
+          (when-not (.exists config-file) (spit config-file (pr-str default))))
+      default))
+
+(def default-config {:popup {:message "Double or quits?"
+                             :minutes 15}
+                     :hue {:range [0.4 0]
+                           :minutes 29}
+                     :flash-minutes 29
+                     :stash-minutes 30
+                     :obliterate-minutes :never})
 
 (defn load-state [edn-file now]
   (let [map->set #(into #{} (keys %))
         set->map #(into {} (for [k %] [k now]))]
     (-> edn-file
-        (try-slurp "#{}")
+        try-slurp
         edn/read-string
+        (or #{})
         set->map
         atom
         (add-watch :write #(spit edn-file (with-out-str (pprint/pprint (map->set %4))))))))
@@ -54,7 +69,8 @@
 
   (println "Started.")
 
-  (let [state (load-state dirs-file (System/currentTimeMillis))
+  (let [config (atom default-config)
+        state (load-state dirs-file (System/currentTimeMillis))
         running (atom true)
         dot (dotty/make-dot "Incremental")]
 
@@ -64,10 +80,13 @@
 
         (println "Looping...")
 
+        ;; read config
+        (swap! config #(load-config config-file %))
+
         ;; ingest instructions
         (when (.exists instruction-file)
           (.renameTo instruction-file ingestion-file)
-          (doseq [[_ op-code data] (re-seq #"(?m)^([-+!]{1}) (.+)$" (try-slurp ingestion-file ""))]
+          (doseq [[_ op-code data] (re-seq #"(?m)^([-+!]{1}) (.+)$" (or (try-slurp ingestion-file) ""))]
             (println ">" op-code data)
             (case op-code
               "+" (swap! state assoc data (System/currentTimeMillis))
