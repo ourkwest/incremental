@@ -14,6 +14,9 @@
   (try (slurp f)
        (catch Exception _ nil)))
 
+(defn spit-edn [file data]
+  (spit file (with-out-str (pprint/pprint data))))
+
 (def incremental-dir (io/file (System/getProperty "user.home") ".incremental"))
 (def instruction-file (io/file incremental-dir "instructions"))
 (def ingestion-file (io/file incremental-dir "ingestion"))
@@ -21,8 +24,9 @@
 (def config-file (io/file incremental-dir "config.edn"))
 
 (defn load-config [config-file default]
-  (or (or (try-slurp config-file)
-          (when-not (.exists config-file) (spit config-file (pr-str default))))
+  (or (edn/read-string
+        (or (try-slurp config-file)
+            (when-not (.exists config-file) (spit-edn config-file default))))
       default))
 
 (def default-config {:popup {:message "Double or quits?"
@@ -42,7 +46,7 @@
         (or #{})
         set->map
         atom
-        (add-watch :write #(spit edn-file (with-out-str (pprint/pprint (map->set %4))))))))
+        (add-watch :write #(spit-edn edn-file (map->set %4))))))
 
 (defn git-clean? [dir]
   (empty? (:out (shell/sh "git" "status" "-s" :dir dir))))
