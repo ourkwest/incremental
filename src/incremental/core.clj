@@ -6,7 +6,6 @@
             [dorothy.core :as dotty])
   (:import (java.awt Color)))
 
-
 (def seconds 1000)
 (def minutes (* 60 seconds))
 
@@ -103,14 +102,15 @@
         (swap! state check-directories)
 
         (let [oldest (apply max (cons 0 (map (comp #(- now %) second) @state)))
-              limit (* 15 minutes)
+              limit (* (-> @config :hue :minutes) minutes)
               proportion (- 1.0 (/ (min limit oldest) limit))
-              hue (* 0.4 proportion)
+              [hue-start hue-end] (-> @config :hue :range)
+              hue (+ hue-end (* proportion (- hue-start hue-end)))
               color (Color/getHSBColor (float hue) (float 1.0) (float 1.0))]
           (dotty/paint dot color)))
 
       ;; Thread/sleep
-      (Thread/sleep (* 10 seconds)))
+      (when @running (Thread/sleep (* 10 seconds))))
 
     (dotty/destroy dot))
 
