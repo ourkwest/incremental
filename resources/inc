@@ -1,23 +1,46 @@
 #!/usr/bin/env bash
 
-mkdir -p ~/.incremental
+set -e
+
+[ -d ".git" ] || (echo "Fatal: not a git repository" && exit 1)
 
 start() {
+  INC_DIR=$(pwd)
+  INC_ID=$(ls -di $(pwd) | cut -f 1 -d " ")
   cd $(dirname $0)/..
+  mkdir -p local/start
+
+  [ ! -f "local/start/$INC_ID" ] || (echo "Fatal: inc is already running here." && exit 1)
+
+  touch local/start/$INC_ID
+  echo $INC_DIR $INC_ID
   echo "Incremental will be running shortly."
-  lein run > ~/.incremental/log 2>&1 &
+  lein run $INC_DIR $INC_ID > local/log 2>&1 &
 }
 
-instruct() {
-  echo $@ >> ~/.incremental/instructions
+stop() {
+  INC_DIR=$(pwd)
+  INC_ID=$(ls -di $(pwd) | cut -f 1 -d " ")
+
+  cd $(dirname $0)/..
+  mkdir -p local/stop
+  rm local/start/$INC_ID || echo "That was weird."
+
+  echo "Incremental will stop running shortly."
+  echo $INC_ID
+  touch local/stop/$INC_ID
 }
+
+#instruct() {
+#  echo $@ >> ~/.incremental/instructions
+#}
 
 case "$1" in
-  add)    instruct "+ $(pwd)";;
-  remove) instruct "- $(pwd)";;
-  stop)   instruct "! Cease.";;
+  stop)   stop;;
   start)  start;;
   "")     start;;
-  *)      echo "Usage: inc [add|remove|start|stop] (defaults to start if no arg passed)"; exit 1;;
+  *)      echo "Usage: inc [start|stop] (defaults to start if no arg passed)"; exit 1;;
 esac
+
+
 

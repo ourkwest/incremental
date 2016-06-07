@@ -4,118 +4,124 @@
             [clojure.pprint :as pprint]
             [clojure.java.shell :as shell]
             [dorothy.core :as dotty])
-  (:import (java.awt Color)))
+  (:import (java.awt Color)
+           (javax.swing JOptionPane ImageIcon SwingUtilities)
+           (java.time Instant)
+           (java.io File)))
 
 (def seconds 1000)
 (def minutes (* 60 seconds))
 
-(defn try-slurp [f]
-  (try (slurp f)
-       (catch Exception _ nil)))
+(defn log [& things]
+  (println (str (Instant/now)) (apply str things)))
+
+(defmacro try-or [& forms]
+  `(or ~@(map (fn [f] `(try ~f (catch Exception _#))) forms)))
 
 (defn spit-edn [file data]
   (spit file (with-out-str (pprint/pprint data))))
 
-(def incremental-dir (io/file (System/getProperty "user.home") ".incremental"))
-(def instruction-file (io/file incremental-dir "instructions"))
-(def ingestion-file (io/file incremental-dir "ingestion"))
-(def dirs-file (io/file incremental-dir "dirs.edn"))
+(defn slurp-edn [file]
+  (edn/read-string (slurp file)))
+
+(def incremental-dir (io/file "."))
 (def config-file (io/file incremental-dir "config.edn"))
 
-(defn load-config [config-file default]
-  (or (edn/read-string
-        (or (try-slurp config-file)
-            (when-not (.exists config-file) (spit-edn config-file default))))
-      default))
-
-(def default-config {:popup {:message "Double or quits?"
-                             :minutes 15}
-                     :hue {:range [0.4 0]
-                           :minutes 29}
-                     :flash-minutes 29
-                     :stash-minutes 30
-                     :obliterate-minutes :never})
-
-(defn load-state [edn-file now]
-  (let [map->set #(into #{} (keys %))
-        set->map #(into {} (for [k %] [k now]))]
-    (-> edn-file
-        try-slurp
-        edn/read-string
-        (or #{})
-        set->map
-        atom
-        (add-watch :write #(spit-edn edn-file (map->set %4))))))
+(def default-config {:hue {:range [0.4 0]
+                           :minutes 30}
+                     :minutes {28 :flash
+                               29 :warn
+                               30 :stash}})
 
 (defn git-clean? [dir]
   (empty? (:out (shell/sh "git" "status" "-s" :dir dir))))
 
-(defn git-obliterate! [dir]
-  (shell/sh "git" "reset" "--hard" :dir dir)
-  (shell/sh "git" "clean" "-fd" :dir dir))
+(defn git-obliterate! [dir & _]
+  (log "This would obliterate " dir)
+  (comment (shell/sh "git" "reset" "--hard" :dir dir)
+           (shell/sh "git" "clean" "-fd" :dir dir)))
 
-(defn git-stash! [dir]
-  (shell/sh "git" "add" "." :dir dir)
-  (shell/sh "git" "stash" :dir dir))
+(defn git-stash! [dir & _]
+  (log "This would stash " dir)
+  (comment (shell/sh "git" "add" "." :dir dir)
+           (shell/sh "git" "stash" :dir dir)))
 
 (defn git-last-commit [dir]
-  (* (Long/parseLong (:out (shell/sh "git" "log" "-n" "1" "--format=format:%at" :dir dir))) seconds))
+  (-> (shell/sh "git" "log" "-n" "1" "--format=format:%at" :dir dir)
+      :out Long/parseLong (* seconds) (try-or 0)))
 
-(defn check-directories [state]
-  (into {} (for [[dir timestamp] state]
-             [dir (if (git-clean? dir)
-                    (System/currentTimeMillis)
-                    (max timestamp (git-last-commit dir)))])))
+(defn image-url [name]
+  (io/resource (str "png" File/separator (dorothy.lookup/emoji-lookup name) ".png")))
 
-;; TODO: configuration - add dot menu for this? or Command line instructions?
-(defn -main [& _]
+(defn show-message! [dir & _]
+  (SwingUtilities/invokeLater
+    #(let [dialog (-> (str "...but you've been working on " dir " for a while.")
+                      (JOptionPane. JOptionPane/INFORMATION_MESSAGE
+                                    JOptionPane/DEFAULT_OPTION
+                                    (ImageIcon. (image-url :warning)))
+                      (.createDialog "Sorry to interrupt..."))]
+      (.setAlwaysOnTop dialog true)
+      (.setVisible dialog true))))
 
-  (println "Started.")
+(defn flash! [_ dot delay color]
+  (let [period (* 0.5 seconds)]
+    (future
+      (loop [t delay
+             f true]
+        (if f
+          (dotty/paint dot color)
+          (dotty/paint dot :warning))
+        (when (< period t)
+          (Thread/sleep period)
+          (recur (- t period) (not f)))))))
 
-  (let [config (atom default-config)
-        state (load-state dirs-file (System/currentTimeMillis))
-        running (atom true)
-        dot (dotty/make-dot "Incremental")]
+(defn new-age [dir age]
+  (if (git-clean? dir)
+    0
+    (min age (- (System/currentTimeMillis) (git-last-commit dir)))))
 
-    (while @running
+(defn in-window [age delay]
+  #(let [time (* (first %) minutes)]
+    (<= age time (+ age (dec delay)))))
 
-      (let [now (System/currentTimeMillis)]
+(def actions {:stash git-stash!
+              :obliterate git-obliterate!
+              :warn show-message!
+              :flash flash!})
 
-        (println "Looping...")
+(defn action! [directory age dot delay config]
+  (let [limit (* (-> config :hue :minutes) minutes)
+        proportion (- 1.0 (/ (min limit age) limit))
+        [hue-start hue-end] (-> config :hue :range)
+        hue (+ hue-end (* proportion (- hue-start hue-end)))
+        color (Color/getHSBColor (float hue) (float 1.0) (float 1.0))
+        todo (map second (filter (in-window age delay) (:minutes config)))]
+    (dotty/paint dot color)
+    (doseq [action todo]
+      (log action directory)
+      ((actions action) directory dot delay color))))
 
-        ;; read config
-        (swap! config #(load-config config-file %))
+(defn reload [current file]
+  (try-or (slurp-edn file) current))
 
-        ;; ingest instructions
-        (when (.exists instruction-file)
-          (.renameTo instruction-file ingestion-file)
-          (doseq [[_ op-code data] (re-seq #"(?m)^([-+!]{1}) (.+)$" (or (try-slurp ingestion-file) ""))]
-            (println ">" op-code data)
-            (case op-code
-              "+" (swap! state assoc data (System/currentTimeMillis))
-              "-" (swap! state dissoc data)
-              "!" (reset! running false)
-              (println "Invalid instruction:" op-code)))
-          (io/delete-file ingestion-file :failed))
-
-        ;; check directories
-        (swap! state check-directories)
-
-        (let [oldest (apply max (cons 0 (map (comp #(- now %) second) @state)))
-              limit (* (-> @config :hue :minutes) minutes)
-              proportion (- 1.0 (/ (min limit oldest) limit))
-              [hue-start hue-end] (-> @config :hue :range)
-              hue (+ hue-end (* proportion (- hue-start hue-end)))
-              color (Color/getHSBColor (float hue) (float 1.0) (float 1.0))]
-          (dotty/paint dot color)))
-
-      ;; Thread/sleep
-      (when @running (Thread/sleep (* 10 seconds))))
-
-    (dotty/destroy dot))
-
-  (println "Exiting...")
-  (System/exit 0))
+(defn -main [directory id & _]
+  (log "Started." directory id)
+  (when-not (.exists config-file) (spit-edn config-file default-config))
+  (let [dot (dotty/make-dot directory)
+        stop-file (io/file "local" "stop" id)]
+    (loop [old-age 0
+           config (reload default-config config-file)]
+      (when (.exists stop-file)
+        (io/delete-file stop-file :silently)
+        (log "Exiting..." directory)
+        (System/exit 0))
+      (let [age (new-age directory old-age)
+            delay (* 10 seconds)]
+        (log age directory)
+        (action! directory age dot delay config)
+        (Thread/sleep delay)
+        (recur (+ age delay)
+               (reload config config-file))))))
 
 ; Bonus brownie recipe for reading the source. :-)
 ;
